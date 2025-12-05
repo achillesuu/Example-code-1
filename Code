@@ -1,0 +1,385 @@
+local Players = game:GetService("Players")
+local ServerStorage = game:GetService("ServerStorage")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local Maps = ServerStorage:WaitForChild("Maps")
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local VoteUpdate = Remotes:WaitForChild("VoteUpdate")
+local StartRound = Remotes:WaitForChild("StartRound")
+local EndRound = Remotes:WaitForChild("EndRound")
+local RoundTimeUpdate = Remotes:WaitForChild("RoundTimeUpdate")
+local RoundResults = Remotes:WaitForChild("RoundResults")
+local WaitingForPlayers = Remotes:WaitForChild("WaitingForPlayers")
+
+local musicsFolder = game.SoundService:FindFirstChild("Musics")
+
+local sun = musicsFolder:FindFirstChild("Sun")
+local hanabi = musicsFolder:FindFirstChild("Hanabi")
+local profundoMarAzul = musicsFolder:FindFirstChild("ProfundoMarAzul")
+
+local votes = {Supermarket = 0, Warehouse = 0}
+local playerVotes = {}
+
+local votingTime = 30
+local roundTime = 120
+
+local lobby = Workspace:WaitForChild("Lobby")
+local superPad = lobby:WaitForChild("SupermarketPad")
+local warePad = lobby:WaitForChild("WarehousePad")
+local lobbySpawn = lobby:WaitForChild("SpawnLocation")
+
+local function getActivePlayers()
+	local list = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		local afk = p:FindFirstChild("AFK")
+
+		if afk and afk.Value == false then
+			table.insert(list, p)
+		end
+	end
+	return list
+end
+
+local function allPlayersReady(minPlayers)
+	local activePlayers = getActivePlayers()
+	return #activePlayers >= minPlayers
+end
+
+local function onPadTouched(mapName, hit)
+	local player = Players:GetPlayerFromCharacter(hit.Parent)
+	if not player then return end
+
+	local userId = player.UserId
+	local previousVote = playerVotes[userId]
+
+	if previousVote and previousVote ~= mapName then
+		votes[previousVote] -= 1
+	end
+
+	if previousVote == mapName then return end
+
+	playerVotes[userId] = mapName
+	votes[mapName] += 1
+
+	VoteUpdate:FireAllClients(votes, votingTime)
+end
+
+superPad.Touched:Connect(function(hit) onPadTouched("Supermarket", hit) end)
+warePad.Touched:Connect(function(hit) onPadTouched("Warehouse", hit) end)
+
+local function teleportPlayersToMap(mapModel)
+	local spawnsFolder = mapModel:WaitForChild("Spawns")
+	local spawnPoints = spawnsFolder:GetChildren()
+	local index = 1
+
+	for _, player in ipairs(getActivePlayers()) do
+		local char = player.Character
+		if char and char:FindFirstChild("HumanoidRootPart") then
+			local spawn = spawnPoints[index] or spawnPoints[#spawnPoints]
+			char.HumanoidRootPart.CFrame = spawn.CFrame + Vector3.new(0,3,0)
+			index += 1
+		end
+	end
+end
+
+local function teleportPlayersToLobby()
+	for _, player in ipairs(getActivePlayers()) do
+		local char = player.Character
+		if char and char:FindFirstChild("HumanoidRootPart") then
+			char.HumanoidRootPart.CFrame = lobbySpawn.CFrame + Vector3.new(0,3,0)
+		end
+	end
+end
+
+local function updateWaitingUI()
+	local needed = math.max(0, 2 - #getActivePlayers())
+	WaitingForPlayers:FireAllClients(needed)
+end
+
+local function connectAFKListener(player)
+	local afk = player:WaitForChild("AFK")
+	afk.Changed:Connect(function()
+		updateWaitingUI()
+	end)
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+	connectAFKListener(p)
+end
+
+Players.PlayerAdded:Connect(function(p)
+	connectAFKListener(p)
+	updateWaitingUI()
+end)
+Players.PlayerRemoving:Connect(updateWaitingUI)
+
+task.spawn(function()
+	while true do
+		
+		while not allPlayersReady(2) do
+			updateWaitingUI()
+			task.wait(1)
+		end
+		
+		WaitingForPlayers:FireAllClients(0)
+		
+		for i = votingTime, 0, -1 do
+			local allReady = true
+			if not allPlayersReady(1) then
+				WaitingForPlayers:FireAllClients(1)
+				repeat task.wait(1) until allPlayersReady(2)
+			end
+
+			if not allReady then
+				i = votingTime
+				WaitingForPlayers:FireAllClients(1)
+				repeat task.wait(1) until allPlayersReady(2)
+			end
+
+			VoteUpdate:FireAllClients(votes, i)
+			task.wait(1)
+		end
+
+		local chosen = votes.Warehouse > votes.Supermarket and "Warehouse" or "Supermarket"
+		StartRound:FireAllClients(chosen)
+
+		local chosenFolder = Maps:FindFirstChild(chosen)
+		local mapModel = chosenFolder:FindFirstChildWhichIsA("Model"):Clone()
+		mapModel.Name = "ActiveMap"
+		mapModel.Parent = Workspace
+		
+		local roundPlayers = getActivePlayers()
+
+		votes.Supermarket = 0
+		votes.Warehouse = 0
+		playerVotes = {}
+
+		-- Functions
+
+		local function assignShoppingList(players, config)
+			for _, player in ipairs(players) do
+				local oldInv = player:FindFirstChild("Inventory")
+				if oldInv then oldInv:Destroy() end
+				local oldList = player:FindFirstChild("ShoppingList")
+				if oldList then oldList:Destroy() end
+
+				local inv = Instance.new("Folder")
+				inv.Name = "Inventory"
+				inv.Parent = player
+
+				local list = Instance.new("Folder")
+				list.Name = "ShoppingList"
+				list.Parent = player
+
+				local count = 10
+				local availableItems = {}
+				for _, item in ipairs(config.Items) do
+					table.insert(availableItems, item)
+				end
+
+				-- Pick unique items
+				for i = 1, count do
+					if #availableItems == 0 then break end
+					local idx = math.random(1, #availableItems)
+					local itemName = availableItems[idx]
+					table.remove(availableItems, idx)
+
+					local tag = Instance.new("StringValue")
+					tag.Name = itemName
+					tag.Parent = list
+				end
+			end
+		end
+
+		-- Get map config
+		local function getMapConfig(mapModel, chosen)
+			local configModule = require(ReplicatedStorage.MapConfigs[chosen])
+			local spawns = mapModel:WaitForChild("ItemSpawns")
+
+			for _, rowName in ipairs(configModule.RowNames) do
+				if spawns:FindFirstChild(rowName.."Row") then
+					configModule.Rows[rowName] = spawns[rowName.."Row"]:GetChildren()
+				else
+					warn("Missing spawn row folder:", rowName.."Row")
+				end
+			end
+			return configModule
+		end
+
+		-- Spawn items
+		local function spawnItems(mapModel, config)
+			local spawnedItemsFolder = mapModel:WaitForChild("ItemsFolder")
+			for i = 1, config.ItemCount do
+				local rowName = config.RowNames[math.random(1, #config.RowNames)]
+				local row = config.Rows[rowName]
+				local spawnPoint = row[math.random(1, #row)]
+				local itemName = config.Items[math.random(1, #config.Items)]
+				local itemFolder = ReplicatedStorage:WaitForChild(config.ItemFolder)
+				local model = itemFolder:FindFirstChild(itemName):Clone()
+				model.Parent = spawnedItemsFolder
+
+				local validPosition = false
+				local tryCount = 0
+				local finalCF
+				while not validPosition and tryCount < 10 do
+					tryCount += 1
+					local size = spawnPoint.Size
+					local offsetX = (math.random()-0.5)*size.X
+					local offsetZ = (math.random()-0.5)*size.Z
+					local baseCF = spawnPoint.CFrame
+					local randomCF = baseCF * CFrame.new(offsetX,0,offsetZ)
+					local itemHeight = (model:GetExtentsSize().Y/2)+(spawnPoint.Size.Y/2)
+					local aboveCF = randomCF * CFrame.new(0,itemHeight,0)
+
+					local rotationCF
+					local _, yRot, _ = spawnPoint.CFrame:ToEulerAnglesYXZ()
+					if config.RotationMode == "SupermarketRotation" then
+						rotationCF = CFrame.Angles(0, yRot, 0)
+					elseif config.RotationMode == "WarehouseRotation" then
+						rotationCF = CFrame.Angles(math.rad(-90), math.rad(-180), 0)
+					end
+
+					finalCF = CFrame.new(aboveCF.Position) * rotationCF
+
+					local overlaps = false
+					local modelSize = model:GetExtentsSize()
+					for _, other in ipairs(spawnedItemsFolder:GetChildren()) do
+						if other ~= model and other:IsA("Model") then
+							local otherSize = other:GetExtentsSize()
+							local dist = (other:GetPivot().Position - finalCF.Position).Magnitude
+							local minAllowed = (modelSize.Magnitude + otherSize.Magnitude)/4
+							if dist < minAllowed then
+								overlaps = true
+								break
+							end
+						end
+					end
+					if not overlaps then validPosition = true end
+				end
+
+				model:PivotTo(finalCF)
+			end
+		end
+
+		-- Start round
+		local config = getMapConfig(mapModel, chosen)
+		spawnItems(mapModel, config)
+		assignShoppingList(getActivePlayers(), config)
+		teleportPlayersToMap(mapModel)
+		
+		hanabi:Stop()
+		
+		local currentSong
+		if math.random(1, 2) == 1 then
+			currentSong = profundoMarAzul
+		else
+			currentSong = sun
+		end
+		
+		currentSong:Play()
+
+		local playerCompletionTime = {}
+		local roundEnded = false
+		local elapsed = 0
+
+		while elapsed < roundTime and not roundEnded do
+			RoundTimeUpdate:FireAllClients(roundTime - elapsed)
+			task.wait(1)
+			elapsed += 1
+			
+			for _, player in ipairs(roundPlayers) do
+				local afk = player:FindFirstChild("AFK")
+				if afk and afk.Value then continue end
+				if not player:FindFirstChild("ShoppingList") then
+					assignShoppingList({player}, config)
+				end
+			end
+
+			for _, player in ipairs(roundPlayers) do
+				local afk = player:FindFirstChild("AFK")
+				if afk and afk.Value then continue end
+				local list = player:FindFirstChild("ShoppingList")
+				if list and #list:GetChildren() == 0 and not playerCompletionTime[player] then
+					playerCompletionTime[player] = elapsed
+
+					EndRound:FireAllClients(player.Name)
+					local activeMap = Workspace:FindFirstChild("ActiveMap")
+					if activeMap then activeMap:Destroy() end
+					teleportPlayersToLobby()
+					roundEnded = true
+					break
+				end
+			end
+		end
+		
+		local winners = {}
+		local fastestTime = math.huge
+
+		for player, time in pairs(playerCompletionTime) do
+			if typeof(time) == "number" and time < fastestTime then
+				fastestTime = time
+				winners = {player}
+			elseif typeof(time) == "number" and time == fastestTime then
+				table.insert(winners, player)
+			end
+		end
+
+		if #winners > 0 then
+			roundEnded = true
+
+			for _, player in ipairs(winners) do
+				local leaderstats = player:FindFirstChild("leaderstats")
+				
+				local boosts = player:FindFirstChild("Boosts")
+				local x2Tokens = boosts:FindFirstChild("x2Tokens")
+				
+				if leaderstats then
+					local wins = leaderstats:FindFirstChild("Wins")
+					local tokens = leaderstats:FindFirstChild("Tokens")
+					if wins then
+						wins.Value += 1
+						if x2Tokens.Value > 0 then
+							wins.Value += 1
+						end
+					end
+					if tokens then
+						tokens.Value += math.random(1, 5)
+					end
+				end
+			end
+
+			local winnerNames = {}
+			for _, player in ipairs(winners) do
+				table.insert(winnerNames, player.Name)
+			end
+
+			EndRound:FireAllClients(unpack(winnerNames))
+
+		else
+			
+			roundEnded = true
+
+			for _, player in ipairs(getActivePlayers()) do
+				local list = player:FindFirstChild("ShoppingList")
+				if list and #list:GetChildren() > 0 then
+					playerCompletionTime[player.Name] = "DNF"
+				end
+			end
+
+			EndRound:FireAllClients()
+		end
+
+		local activeMap = Workspace:FindFirstChild("ActiveMap")
+		if activeMap then
+			activeMap:Destroy()
+		end
+		
+		currentSong:Stop()
+		hanabi:Play()
+
+		teleportPlayersToLobby()
+
+		RoundResults:FireAllClients(playerCompletionTime)
+	end
+end)
