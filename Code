@@ -225,7 +225,7 @@ task.spawn(function()
 			local configModule = require(ReplicatedStorage.MapConfigs[chosen])
 			local spawns = mapModel:WaitForChild("ItemSpawns")
 			
-			-- Each map has a folder called "ItemSpawns" and its children has a name that matches the row names
+			-- Each map has a folder called "ItemSpawns" and its children (folder) has a name that matches the row names
 			
 			for _, rowName in ipairs(configModule.RowNames) do
 				if spawns:FindFirstChild(rowName.."Row") then
