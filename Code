@@ -96,7 +96,7 @@ end
 superPad.Touched:Connect(function(hit) onPadTouched("Supermarket", hit) end)
 warePad.Touched:Connect(function(hit) onPadTouched("Warehouse", hit) end)
 
--- Teleport helpers
+-- Teleport
 local function teleportPlayersToMap(mapModel)
 	local spawnsFolder = mapModel:WaitForChild("Spawns")
 	local spawnPoints = spawnsFolder:GetChildren()
