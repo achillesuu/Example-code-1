@@ -1,5 +1,4 @@
 -- Variables
-
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -16,9 +15,9 @@ local WaitingForPlayers = Remotes:WaitForChild("WaitingForPlayers")
 
 local musicsFolder = game.SoundService:FindFirstChild("Musics")
 
-local sun = musicsFolder:FindFirstChild("Sun")
-local hanabi = musicsFolder:FindFirstChild("Hanabi")
-local profundoMarAzul = musicsFolder:FindFirstChild("ProfundoMarAzul")
+local sun = musicsFolder and musicsFolder:FindFirstChild("Sun")
+local hanabi = musicsFolder and musicsFolder:FindFirstChild("Hanabi")
+local profundoMarAzul = musicsFolder and musicsFolder:FindFirstChild("ProfundoMarAzul")
 
 local votes = {Supermarket = 0, Warehouse = 0}
 local playerVotes = {}
@@ -31,55 +30,73 @@ local superPad = lobby:WaitForChild("SupermarketPad")
 local warePad = lobby:WaitForChild("WarehousePad")
 local lobbySpawn = lobby:WaitForChild("SpawnLocation")
 
--- Get all active players (non afk)
-
+-- Utility: get active players (non afk)
 local function getActivePlayers()
 	local list = {}
 	for _, p in ipairs(Players:GetPlayers()) do
 		local afk = p:FindFirstChild("AFK")
-
-		if afk and afk.Value == false then
+		-- also ensure they have character and HumanoidRootPart (optional)
+		local char = p.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if afk and afk.Value == false and hrp then
 			table.insert(list, p)
 		end
 	end
 	return list
 end
 
--- Checking active players to start the round
-
 local function allPlayersReady(minPlayers)
 	local activePlayers = getActivePlayers()
 	return #activePlayers >= minPlayers
 end
 
--- Map voting
+-- Remove a player's vote (used on leave or AFK)
+local function removePlayerVote(player)
+	local userId = player.UserId
+	local prev = playerVotes[userId]
+	if prev then
+		playerVotes[userId] = nil
+		if votes[prev] then
+			votes[prev] = math.max(0, votes[prev] - 1)
+		end
+		VoteUpdate:FireAllClients(votes, votingTime)
+	end
+end
 
+-- Map voting pads handler (only registers votes if player is active)
 local function onPadTouched(mapName, hit)
 	local player = Players:GetPlayerFromCharacter(hit.Parent)
 	if not player then return end
 
+	local afk = player:FindFirstChild("AFK")
+	if afk and afk.Value then
+		return -- ignore AFK players
+	end
+
 	local userId = player.UserId
 	local previousVote = playerVotes[userId]
 
+	-- If they change vote, decrement previous
 	if previousVote and previousVote ~= mapName then
-		votes[previousVote] -= 1
+		if votes[previousVote] and votes[previousVote] > 0 then
+			votes[previousVote] -= 1
+		end
 	end
 
+	-- If they are re-pressing same pad, do nothing
 	if previousVote == mapName then return end
 
 	playerVotes[userId] = mapName
-	votes[mapName] += 1
+	votes[mapName] = (votes[mapName] or 0) + 1
 
 	VoteUpdate:FireAllClients(votes, votingTime)
 end
 
--- Map voting pads
-
+-- Hook pads
 superPad.Touched:Connect(function(hit) onPadTouched("Supermarket", hit) end)
 warePad.Touched:Connect(function(hit) onPadTouched("Warehouse", hit) end)
 
--- Teleport players to map
-
+-- Teleport helpers
 local function teleportPlayersToMap(mapModel)
 	local spawnsFolder = mapModel:WaitForChild("Spawns")
 	local spawnPoints = spawnsFolder:GetChildren()
@@ -95,8 +112,6 @@ local function teleportPlayersToMap(mapModel)
 	end
 end
 
--- Teleport players back to lobby after round end
-
 local function teleportPlayersToLobby()
 	for _, player in ipairs(getActivePlayers()) do
 		local char = player.Character
@@ -106,83 +121,120 @@ local function teleportPlayersToLobby()
 	end
 end
 
--- Ui to tell players is there enough players to start the round
-
+-- UI waiting
 local function updateWaitingUI()
 	local needed = math.max(0, 2 - #getActivePlayers())
 	WaitingForPlayers:FireAllClients(needed)
 end
 
--- Checking if a player went afk or active
-
+-- AFK listener
 local function connectAFKListener(player)
 	local afk = player:WaitForChild("AFK")
 	afk.Changed:Connect(function()
+		-- If player went AFK, remove vote and update UI
+		if afk.Value then
+			removePlayerVote(player)
+		end
 		updateWaitingUI()
 	end)
 end
 
+-- Hook existing players
 for _, p in ipairs(Players:GetPlayers()) do
 	connectAFKListener(p)
 end
 
--- New player joined
-
+-- Player join/leave
 Players.PlayerAdded:Connect(function(p)
 	connectAFKListener(p)
 	updateWaitingUI()
 end)
-Players.PlayerRemoving:Connect(updateWaitingUI)
 
+Players.PlayerRemoving:Connect(function(p)
+	-- Remove their vote if any
+	removePlayerVote(p)
+	updateWaitingUI()
+end)
+
+-- Helper: clean up active map safely
+local function cleanupActiveMap()
+	local activeMap = Workspace:FindFirstChild("ActiveMap")
+	if activeMap then
+		activeMap:Destroy()
+	end
+end
+
+-- Helper: end the round early and teleport players to lobby (safe)
+local function endRoundEarly()
+	-- notify clients that round ended with no winner (or nil)
+	EndRound:FireAllClients()
+	cleanupActiveMap()
+	teleportPlayersToLobby()
+	-- optionally reset votes/player states if needed
+end
+
+-- Main loop
 task.spawn(function()
 	while true do
-		
-		-- Must have atleast 2 players ready to start the round
-		
+		-- Wait for at least 2 active players
 		while not allPlayersReady(2) do
 			updateWaitingUI()
 			task.wait(1)
 		end
-		
+
 		WaitingForPlayers:FireAllClients(0)
-		
-		-- Voting for map
-		
-		for i = votingTime, 0, -1 do
-			local allReady = true
-			if not allPlayersReady(1) then
-				WaitingForPlayers:FireAllClients(1)
+
+		-- Reset votes
+		votes.Supermarket = 0
+		votes.Warehouse = 0
+		playerVotes = {}
+
+		-- Voting phase (pauses if not enough active players)
+		local remaining = votingTime
+		while remaining > 0 do
+			-- If at any point active players drop below 2, pause voting and wait until they're back
+			if not allPlayersReady(2) then
+				WaitingForPlayers:FireAllClients(math.max(0, 2 - #getActivePlayers()))
 				repeat task.wait(1) until allPlayersReady(2)
+				-- once back, continue voting (do not reset remaining unless you want to)
 			end
 
-			if not allReady then
-				i = votingTime
-				WaitingForPlayers:FireAllClients(1)
-				repeat task.wait(1) until allPlayersReady(2)
-			end
-
-			VoteUpdate:FireAllClients(votes, i)
+			VoteUpdate:FireAllClients(votes, remaining)
 			task.wait(1)
+			remaining -= 1
 		end
-		
-		-- Round start
-		
+
+		-- Choose map
 		local chosen = votes.Warehouse > votes.Supermarket and "Warehouse" or "Supermarket"
 		StartRound:FireAllClients(chosen)
 
 		local chosenFolder = Maps:FindFirstChild(chosen)
-		local mapModel = chosenFolder:FindFirstChildWhichIsA("Model"):Clone()
+		if not chosenFolder then
+			warn("Chosen map not found:", chosen)
+			-- fallback to continue loop
+			task.wait(1)
+			continue
+		end
+
+		local mapModelSource = chosenFolder:FindFirstChildWhichIsA("Model")
+		if not mapModelSource then
+			warn("Map model missing inside folder:", chosen)
+			task.wait(1)
+			continue
+		end
+
+		local mapModel = mapModelSource:Clone()
 		mapModel.Name = "ActiveMap"
 		mapModel.Parent = Workspace
-		
-		local roundPlayers = getActivePlayers()
 
+		local roundPlayers = getActivePlayers() -- players at round start
+
+		-- Reset votes for next round
 		votes.Supermarket = 0
 		votes.Warehouse = 0
 		playerVotes = {}
-		
-		-- Assign shopping list (UI) to players
-		
+
+		-- assign shopping lists etc (unchanged, using your functions)
 		local function assignShoppingList(players, config)
 			for _, player in ipairs(players) do
 				local oldInv = player:FindFirstChild("Inventory")
@@ -204,8 +256,6 @@ task.spawn(function()
 					table.insert(availableItems, item)
 				end
 
-				-- Pick unique items
-				
 				for i = 1, count do
 					if #availableItems == 0 then break end
 					local idx = math.random(1, #availableItems)
@@ -219,14 +269,10 @@ task.spawn(function()
 			end
 		end
 
-		-- Getting map config
-		
 		local function getMapConfig(mapModel, chosen)
 			local configModule = require(ReplicatedStorage.MapConfigs[chosen])
 			local spawns = mapModel:WaitForChild("ItemSpawns")
-			
-			-- Each map has a folder called "ItemSpawns" and its children (folder) has a name that matches the row names
-			
+
 			for _, rowName in ipairs(configModule.RowNames) do
 				if spawns:FindFirstChild(rowName.."Row") then
 					configModule.Rows[rowName] = spawns[rowName.."Row"]:GetChildren()
@@ -237,8 +283,6 @@ task.spawn(function()
 			return configModule
 		end
 
-		-- Spawn items in the map (rows)
-		
 		local function spawnItems(mapModel, config)
 			local spawnedItemsFolder = mapModel:WaitForChild("ItemsFolder")
 			for i = 1, config.ItemCount do
@@ -293,129 +337,70 @@ task.spawn(function()
 			end
 		end
 
-		-- Start round
-		
+		-- Start round processes
 		local config = getMapConfig(mapModel, chosen)
 		spawnItems(mapModel, config)
-		assignShoppingList(getActivePlayers(), config)
+		assignShoppingList(getActivePlayers(), config) -- give to active players (re-evaluated)
 		teleportPlayersToMap(mapModel)
-		
-		--Stop lobby song
-		
-		hanabi:Stop()
-		
-		-- Randomly choose a song for this round
-		
-		local currentSong
-		if math.random(1, 2) == 1 then
-			currentSong = profundoMarAzul
-		else
-			currentSong = sun
-		end
-		
-		-- Song playssss
-		
-		currentSong:Play()
+
+		-- Stop lobby song safely
+		if hanabi then pcall(function() hanabi:Stop() end) end
+
+		-- choose & play round song
+		local currentSong = (math.random(1, 2) == 1) and profundoMarAzul or sun
+		if currentSong then pcall(function() currentSong:Play() end) end
 
 		local playerCompletionTime = {}
 		local roundEnded = false
 		local elapsed = 0
-		
-		-- Start round timer
-		
+
+		-- Round timer loop (ends early if not enough players)
 		while elapsed < roundTime and not roundEnded do
+			-- If active players drop below 2, end the round early
+			if #getActivePlayers() < 2 then
+				-- Notify clients and cleanup
+				-- You may prefer to pause instead of ending; change behavior here if desired
+				EndRound:FireAllClients() -- inform clients
+				cleanupActiveMap()
+				teleportPlayersToLobby()
+				roundEnded = true
+				break
+			end
+
 			RoundTimeUpdate:FireAllClients(roundTime - elapsed)
 			task.wait(1)
 			elapsed += 1
-			
-			-- Checking to see if a player is afk, an afk player doesn't receive a shopping list
-			
-			for _, player in ipairs(roundPlayers) do
+
+			-- Ensure everyone has a shopping list if they're active
+			for _, player in ipairs(getActivePlayers()) do
 				local afk = player:FindFirstChild("AFK")
 				if afk and afk.Value then continue end
 				if not player:FindFirstChild("ShoppingList") then
 					assignShoppingList({player}, config)
 				end
 			end
-			
-			-- Checking to see if a player have completed their shopping list
-			
-			for _, player in ipairs(roundPlayers) do
+
+			-- Check for completion
+			for _, player in ipairs(getActivePlayers()) do
 				local afk = player:FindFirstChild("AFK")
 				if afk and afk.Value then continue end
 				local list = player:FindFirstChild("ShoppingList")
 				if list and #list:GetChildren() == 0 and not playerCompletionTime[player] then
 					playerCompletionTime[player] = elapsed
 
-					-- 1 shopping list completed, round end
-					
+					-- One player completed, end round
 					EndRound:FireAllClients(player.Name)
-					local activeMap = Workspace:FindFirstChild("ActiveMap")
-					if activeMap then activeMap:Destroy() end
+					cleanupActiveMap()
 					teleportPlayersToLobby()
 					roundEnded = true
 					break
 				end
 			end
 		end
-		
-		local winners = {}
-		local fastestTime = math.huge
-		
-		-- Checking for fastest time
-		
-		for player, time in pairs(playerCompletionTime) do
-			if typeof(time) == "number" and time < fastestTime then
-				fastestTime = time
-				winners = {player}
-			elseif typeof(time) == "number" and time == fastestTime then
-				table.insert(winners, player)
-			end
-		end
-		
-		-- If there's a winner, give them wins and tokens
 
-		if #winners > 0 then
-			roundEnded = true
-
-			for _, player in ipairs(winners) do
-				local leaderstats = player:FindFirstChild("leaderstats")
-				
-				-- Boosts in the shop give extra tokens
-				
-				local boosts = player:FindFirstChild("Boosts")
-				local x2Tokens = boosts:FindFirstChild("x2Tokens")
-				
-				if leaderstats then
-					local wins = leaderstats:FindFirstChild("Wins")
-					local tokens = leaderstats:FindFirstChild("Tokens")
-					if wins then
-						wins.Value += 1
-					end
-					if tokens then
-						tokens.Value += math.random(1, 5)
-						if x2Tokens.Value > 0 then
-							tokens.Value += math.random(5, 10)
-						end
-					end
-				end
-			end
-			
-			-- Fire the endround event to all clients (Ui text) with the winner names
-			
-			local winnerNames = {}
-			for _, player in ipairs(winners) do
-				table.insert(winnerNames, player.Name)
-			end
-
-			EndRound:FireAllClients(unpack(winnerNames))
-
-		else
-			
-			-- If there's no winner, DNF all players and fire the endround event to all clients (Ui text)
-			
-			roundEnded = true
-
+		-- If round ended normally (not early by single winner path), handle winners / results
+		if not next(playerCompletionTime) then
+			-- No winners: DNF
 			for _, player in ipairs(getActivePlayers()) do
 				local list = player:FindFirstChild("ShoppingList")
 				if list and #list:GetChildren() > 0 then
@@ -424,26 +409,55 @@ task.spawn(function()
 			end
 
 			EndRound:FireAllClients()
-		end
-		
-		-- Map destroyed
+		else
+			-- compute winners (fastest times)
+			local winners = {}
+			local fastestTime = math.huge
+			for player, time in pairs(playerCompletionTime) do
+				if typeof(time) == "number" and time < fastestTime then
+					fastestTime = time
+					winners = {player}
+				elseif typeof(time) == "number" and time == fastestTime then
+					table.insert(winners, player)
+				end
+			end
 
-		local activeMap = Workspace:FindFirstChild("ActiveMap")
-		if activeMap then
-			activeMap:Destroy()
+			if #winners > 0 then
+				-- award winners
+				for _, player in ipairs(winners) do
+					local leaderstats = player:FindFirstChild("leaderstats")
+					local boosts = player:FindFirstChild("Boosts")
+					local x2Tokens = boosts and boosts:FindFirstChild("x2Tokens")
+					if leaderstats then
+						local wins = leaderstats:FindFirstChild("Wins")
+						local tokens = leaderstats:FindFirstChild("Tokens")
+						if wins then wins.Value += 1 end
+						if tokens then
+							tokens.Value += math.random(1,5)
+							if x2Tokens and x2Tokens.Value > 0 then
+								tokens.Value += math.random(5,10)
+							end
+						end
+					end
+				end
+
+				local winnerNames = {}
+				for _, player in ipairs(winners) do
+					table.insert(winnerNames, player.Name)
+				end
+				EndRound:FireAllClients(unpack(winnerNames))
+			else
+				-- no winners; DNF handling already done earlier
+				EndRound:FireAllClients()
+			end
 		end
-		
-		-- Round song end, lobby song plays
-		
-		currentSong:Stop()
-		hanabi:Play()
-		
-		-- Teleport players to lobby
+
+		-- Final cleanup & restore lobby
+		cleanupActiveMap()
+		if currentSong then pcall(function() currentSong:Stop() end) end
+		if hanabi then pcall(function() hanabi:Play() end) end
 
 		teleportPlayersToLobby()
-		
-		-- Reset player completion time
-
 		RoundResults:FireAllClients(playerCompletionTime)
 	end
 end)
