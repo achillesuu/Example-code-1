@@ -83,7 +83,7 @@ local function onPadTouched(mapName, hit)
 		end
 	end
 
-	-- If they are re-pressing same pad, do nothing
+	-- If they are repressing same pad, do nothing
 	if previousVote == mapName then return end
 
 	playerVotes[userId] = mapName
@@ -156,7 +156,7 @@ Players.PlayerRemoving:Connect(function(p)
 	updateWaitingUI()
 end)
 
--- Helper: clean up active map safely
+-- clean up active map safely
 local function cleanupActiveMap()
 	local activeMap = Workspace:FindFirstChild("ActiveMap")
 	if activeMap then
@@ -164,7 +164,7 @@ local function cleanupActiveMap()
 	end
 end
 
--- Helper: end the round early and teleport players to lobby (safe)
+-- end the round early and teleport players to lobby (safe)
 local function endRoundEarly()
 	-- notify clients that round ended with no winner (or nil)
 	EndRound:FireAllClients()
@@ -234,7 +234,7 @@ task.spawn(function()
 		votes.Warehouse = 0
 		playerVotes = {}
 
-		-- assign shopping lists etc (unchanged, using your functions)
+		-- Assign shopping lists etc (unchanged, using your functions)
 		local function assignShoppingList(players, config)
 			for _, player in ipairs(players) do
 				local oldInv = player:FindFirstChild("Inventory")
@@ -359,7 +359,6 @@ task.spawn(function()
 			-- If active players drop below 2, end the round early
 			if #getActivePlayers() < 2 then
 				-- Notify clients and cleanup
-				-- You may prefer to pause instead of ending; change behavior here if desired
 				EndRound:FireAllClients() -- inform clients
 				cleanupActiveMap()
 				teleportPlayersToLobby()
@@ -447,7 +446,7 @@ task.spawn(function()
 				end
 				EndRound:FireAllClients(unpack(winnerNames))
 			else
-				-- no winners; DNF handling already done earlier
+				-- no winners, DNF handling already done earlier
 				EndRound:FireAllClients()
 			end
 		end
